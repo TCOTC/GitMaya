@@ -1,5 +1,6 @@
 import argparse
 import logging
+from urllib.parse import urlparse
 
 import tasks
 from utils.constant import TopicType
@@ -127,11 +128,6 @@ class GitMayaLarkParser(object):
         parser_reopen = self.subparsers.add_parser("/reopen")
         parser_reopen.set_defaults(func=self.on_reopen)
 
-        # TODO 这里实际上拿到的信息是 @_user_1，需要检查是不是当前机器人
-        parser_at_bot = self.subparsers.add_parser("at_user_1")
-        parser_at_bot.add_argument("command", nargs="*")
-        parser_at_bot.set_defaults(func=self.on_at_bot)
-
     def _get_topic_by_args(self, *args):
         # 新增一个判断是不是在issue/pr/repo的话题中
         chat_type, topic = "", ""
@@ -214,19 +210,39 @@ class GitMayaLarkParser(object):
             }
             # 只有群聊才是指定的repo
             if "group" == chat_type:
-                title, users, labels = [], [], []
-                for arg in param.argv:
-                    if not "\n" in arg:
-                        if not "at_user" in arg and len(users) == 0:
-                            title.append(arg)
-                        elif "at_user" in arg:
-                            users.append(
-                                mentions[arg]["id"]["open_id"]
-                                if arg in mentions
-                                else ""
+                if len(param.argv) == 1:
+                    issue_id_or_link = param.argv[0]
+                    try:
+                        if issue_id_or_link.isdigit():
+                            tasks.sync_issue.delay(
+                                int(issue_id_or_link), None, *args, **kwargs
+                            )
+                        elif urlparse(issue_id_or_link).netloc:
+                            # 这里是否需要检查netloc==github.com??
+                            tasks.sync_issue.delay(
+                                None, issue_id_or_link, *args, **kwargs
                             )
                         else:
-                            labels = arg.split(",")
+                            raise Exception("invalid issue_id or issue link.")
+                        return "issue", param, unkown
+                    except Exception as e:
+                        logging.error(e)
+
+                title, users, labels = [], [], []
+
+                for arg in param.argv:
+                    # 只解析第一行
+                    if "\n" in arg:
+                        break
+                    if not "at_user" in arg and len(users) == 0:
+                        title.append(arg)
+                    elif "at_user" in arg:
+                        users.append(
+                            mentions[arg]["id"]["open_id"] if arg in mentions else ""
+                        )
+                    else:
+                        labels = arg.split(",")
+
                 # 支持title中间有空格
                 title = " ".join(title)
                 users = [open_id for open_id in users if open_id]
@@ -507,27 +523,6 @@ class GitMayaLarkParser(object):
         elif TopicType.PULL_REQUEST == topic:
             tasks.reopen_pull_request.delay(*args, **kwargs)
         return "reopen", param, unkown
-
-    def on_at_bot(self, param, unkown, *args, **kwargs):
-        logging.info("on_at_user_1 %r %r", vars(param), unkown)
-
-        raw_message = args[3]
-        user_id = raw_message["event"]["message"]["mentions"][0]["id"]["user_id"]
-        user_key = raw_message["event"]["message"]["mentions"][0]["key"]
-        logging.info(f"user_id: {user_id}")
-        logging.info(f"user_key: {user_key}")
-        # command = param.command
-        content = args[2].split(" ", 1)
-
-        # 判断机器人
-        if user_key == "@_user_1" and user_id is None:
-            command = content[1] if len(content) > 1 else None
-            # 判断@bot 后续命令合法即执行
-            if command:
-                self.parse_args(command, *args, **kwargs)
-            return self.on_help(param, unkown, *args, **kwargs)
-
-        return "on_at_bot", param, unkown
 
     def parse_args(self, command, *args, **kwargs):
         try:

@@ -13,7 +13,7 @@ class ChatManual(FeishuMessageCard):
             GitMayaTitle(),
             FeishuMessageHr(),
             FeishuMessageDiv(
-                content="**📄 创建 Issue **\n*群聊下回复「/issue + 新 Issue 标题 + @分配成员」 *",
+                content="**📄 创建 Issue **\n*群聊下回复「/issue + 新 Issue 标题 + @分配成员」 *\n*群聊绑定多仓库时，请在对应仓库话题下创建 Issue *",
                 tag="lark_md",
             ),
             # FeishuMessageDiv(
@@ -29,6 +29,10 @@ class ChatManual(FeishuMessageCard):
             #     if len(actions) > 0
             #     else None,
             # ),
+            FeishuMessageDiv(
+                content="**🗄 关联新仓库至当前群聊 **\n*群聊下回复「/match + repo url」 *",
+                tag="lark_md",
+            ),
             FeishuMessageDiv(
                 content=f"**⚡️ 前往 GitHub 查看 Repo 主页 **\n*群聊下回复「/view」 *",
                 tag="lark_md",

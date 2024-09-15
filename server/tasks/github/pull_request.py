@@ -47,6 +47,9 @@ def on_pull_request_opened(event_dict: dict | list | None) -> list:
     pr_info = event.pull_request
 
     repo = db.session.query(Repo).filter(Repo.repo_id == event.repository.id).first()
+    if not repo:
+        app.logger.error(f"Failed to find repo: {event_dict}")
+        return []
     # 检查是否已经创建过 pullrequest
     pr = (
         db.session.query(PullRequest)
@@ -59,6 +62,9 @@ def on_pull_request_opened(event_dict: dict | list | None) -> list:
     if pr:
         app.logger.info(f"PullRequest already exists: {pr.id}")
         return []
+
+    # 限制 body 长度
+    pr_info.body = pr_info.body[:1000] if pr_info.body else ""
 
     # 创建 pullrequest
     new_pr = PullRequest(
@@ -105,7 +111,9 @@ def on_pull_request_updated(event_dict: dict) -> list:
     )
     if pr:
         pr.title = event.pull_request.title
-        pr.description = event.pull_request.body
+        pr.description = (
+            event.pull_request.body[:1000] if event.pull_request.body else ""
+        )
         pr.base = event.pull_request.base.ref
         pr.head = event.pull_request.head.ref
         pr.state = event.pull_request.state

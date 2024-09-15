@@ -7,10 +7,12 @@ class IssueCard(FeishuMessageCard):
         repo_url="https://github.com/ConnectAI-E/GitMaya",
         id=16,
         title="",
-        description="",
+        description=None,
         status="待完成",
         persons=[],
         assignees=[],
+        creater=None,
+        is_creater_outside=False,
         tags=[],
         updated="2022年12月23日 16:32",
     ):
@@ -21,6 +23,9 @@ class IssueCard(FeishuMessageCard):
             "".join([f"<at id={open_id}></at>" for open_id in assignees])
             if len(assignees) > 0
             else "**<font color='red'>待分配</font>**"
+        )
+        creater = (
+            f"{creater}(组织外用户)" if is_creater_outside else f"<at id={creater}></at>"
         )
         labels = "、".join(tags) if len(tags) > 0 else "**<font color='red'>待补充</font>**"
         action_button = (
@@ -35,7 +40,11 @@ class IssueCard(FeishuMessageCard):
                 FeishuMessageDiv(
                     "💬  <font color='black'>**主要内容**</font>", tag="lark_md"
                 ),
-                FeishuMessageMarkdown(description),
+                FeishuMessageMarkdown(
+                    # TODO 替换content
+                    description,
+                    text_align="left",
+                ),
             ]
             if description
             else []
@@ -66,6 +75,15 @@ class IssueCard(FeishuMessageCard):
                         FeishuMessageColumn(
                             FeishuMessageMarkdown(
                                 f"🏷 <font color='grey'>**标签** </font>\n{labels}",
+                                text_align="left",
+                            ),
+                            width="weighted",
+                            weight=1,
+                            vertical_align="top",
+                        ),
+                        FeishuMessageColumn(
+                            FeishuMessageMarkdown(
+                                f"🧔 <font color='grey'>**创建人**</font>\n{creater}",
                                 text_align="left",
                             ),
                             width="weighted",

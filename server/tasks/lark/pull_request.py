@@ -2,7 +2,7 @@ import json
 import logging
 
 from celery_app import app, celery
-from connectai.lark.sdk import FeishuTextMessage
+from connectai.lark.sdk import FeishuPostMessage, FeishuTextMessage
 from model.schema import (
     ChatGroup,
     CodeApplication,
@@ -15,6 +15,13 @@ from model.schema import (
     db,
 )
 from model.team import get_assignees_by_openid
+from tasks.lark.issue import (
+    gen_comment_post_message,
+    get_creater_by_item,
+    get_github_name_by_openid,
+    replace_im_name_to_github_name,
+    replace_images_with_keys,
+)
 from utils.github.repo import GitHubAppRepo
 from utils.lark.pr_card import PullCard
 from utils.lark.pr_manual import (
@@ -89,6 +96,7 @@ def get_assignees_by_pr(pr, team):
 
 def gen_pr_card_by_pr(pr: PullRequest, repo_url, team, maunal=False):
     assignees = get_assignees_by_pr(pr, team)
+    creater, code_name = get_creater_by_item(pr, team)
     reviewers = pr.extra.get("requested_reviewers", [])
 
     if len(reviewers):
@@ -136,6 +144,8 @@ def gen_pr_card_by_pr(pr: PullRequest, repo_url, team, maunal=False):
         status=status,
         merged=merged,
         persons=[],  # TODO：应该是所有有写权限的人
+        creater=creater if creater else code_name,
+        is_creater_outside=False if creater else True,
         assignees=assignees,
         reviewers=reviewers,
         labels=labels,
@@ -166,7 +176,14 @@ def send_pull_request_manual(app_id, message_id, content, data, *args, **kwargs)
     bot, application = get_bot_by_application_id(app_id)
     if not application:
         return send_pull_request_failed_tip(
-            "找不到对应的应用", app_id, message_id, content, data, *args, bot=bot, **kwargs
+            "找不到对应的应用",
+            app_id,
+            message_id,
+            content,
+            data,
+            *args,
+            bot=bot,
+            **kwargs,
         )
 
     team = (
@@ -178,7 +195,14 @@ def send_pull_request_manual(app_id, message_id, content, data, *args, **kwargs)
     )
     if not team:
         return send_pull_request_failed_tip(
-            "找不到对应的项目", app_id, message_id, content, data, *args, bot=bot, **kwargs
+            "找不到对应的项目",
+            app_id,
+            message_id,
+            content,
+            data,
+            *args,
+            bot=bot,
+            **kwargs,
         )
 
     repo_url = f"https://github.com/{team.name}/{repo.name}"
@@ -212,7 +236,14 @@ def send_pull_request_url_message(
     bot, application = get_bot_by_application_id(app_id)
     if not application:
         return send_pull_request_failed_tip(
-            "找不到对应的应用", app_id, message_id, content, data, *args, bot=bot, **kwargs
+            "找不到对应的应用",
+            app_id,
+            message_id,
+            content,
+            data,
+            *args,
+            bot=bot,
+            **kwargs,
         )
 
     team = (
@@ -224,7 +255,14 @@ def send_pull_request_url_message(
     )
     if not team:
         return send_pull_request_failed_tip(
-            "找不到对应的项目", app_id, message_id, content, data, *args, bot=bot, **kwargs
+            "找不到对应的项目",
+            app_id,
+            message_id,
+            content,
+            data,
+            *args,
+            bot=bot,
+            **kwargs,
         )
 
     repo_url = f"https://github.com/{team.name}/{repo.name}"
@@ -245,7 +283,14 @@ def send_pull_request_url_message(
         )
     else:
         return send_pull_request_failed_tip(
-            "找不到对应的项目", app_id, message_id, content, data, *args, bot=bot, **kwargs
+            "找不到对应的项目",
+            app_id,
+            message_id,
+            content,
+            data,
+            *args,
+            bot=bot,
+            **kwargs,
         )
     # 回复到话题内部
     return bot.reply(message_id, message).json()
@@ -281,14 +326,14 @@ def send_pull_request_card(pull_request_id: str):
     """
     pr = db.session.query(PullRequest).filter(PullRequest.id == pull_request_id).first()
     if pr:
+        repo = db.session.query(Repo).filter(Repo.id == pr.repo_id).first()
         chat_group = (
             db.session.query(ChatGroup)
             .filter(
-                ChatGroup.repo_id == pr.repo_id,
+                ChatGroup.id == repo.chat_group_id,
             )
             .first()
         )
-        repo = db.session.query(Repo).filter(Repo.id == pr.repo_id).first()
         if chat_group and repo:
             bot, application = get_bot_by_application_id(chat_group.im_application_id)
             team = db.session.query(Team).filter(Team.id == application.team_id).first()
@@ -307,6 +352,10 @@ def send_pull_request_card(pull_request_id: str):
                     db.session.commit()
 
                     assignees = get_assignees_by_pr(pr, team)
+                    creater, _ = get_creater_by_item(pr, team)
+                    if creater not in assignees and creater:
+                        assignees.append(creater)
+
                     users = (
                         "".join(
                             [f'<at user_id="{open_id}"></at>' for open_id in assignees]
@@ -319,7 +368,7 @@ def send_pull_request_card(pull_request_id: str):
                         message_id,
                         # TODO 第一条话题消息，直接放repo_url
                         FeishuTextMessage(
-                            f"{users}{repo_url}/pull/{pr.pull_request_number}"
+                            f"{users} {repo_url}/pull/{pr.pull_request_number}"
                         ),
                         reply_in_thread=True,
                     ).json()
@@ -338,18 +387,25 @@ def send_pull_request_comment(pull_request_id, comment, user_name: str):
     """
     pr = db.session.query(PullRequest).filter(PullRequest.id == pull_request_id).first()
     if pr:
+        repo = db.session.query(Repo).filter(Repo.id == pr.repo_id).first()
+        if not repo:
+            return False
         chat_group = (
             db.session.query(ChatGroup)
             .filter(
-                ChatGroup.repo_id == pr.repo_id,
+                ChatGroup.id == repo.chat_group_id,
             )
             .first()
         )
         if chat_group and pr.message_id:
             bot, _ = get_bot_by_application_id(chat_group.im_application_id)
+            # 替换 comment 中的图片 url 为 image_key
+            comment = replace_images_with_keys(comment, bot)
+            # 统一用富文本回答, 支持图片、at
+            content = gen_comment_post_message(user_name, comment)
             result = bot.reply(
                 pr.message_id,
-                FeishuTextMessage(f"@{user_name}: {comment}"),
+                FeishuPostMessage(*content),
             ).json()
             return result
     return False
@@ -367,14 +423,16 @@ def update_pull_request_card(pr_id: str) -> bool | dict:
 
     pr = db.session.query(PullRequest).filter(PullRequest.id == pr_id).first()
     if pr:
+        repo = db.session.query(Repo).filter(Repo.id == pr.repo_id).first()
+        if not repo:
+            return False
         chat_group = (
             db.session.query(ChatGroup)
             .filter(
-                ChatGroup.repo_id == pr.repo_id,
+                ChatGroup.id == repo.chat_group_id,
             )
             .first()
         )
-        repo = db.session.query(Repo).filter(Repo.id == pr.repo_id).first()
         if chat_group and repo:
             bot, application = get_bot_by_application_id(chat_group.im_application_id)
             team = db.session.query(Team).filter(Team.id == application.team_id).first()
@@ -465,8 +523,35 @@ def create_pull_request_comment(app_id, message_id, content, data, *args, **kwar
     github_app, team, repo, pr, _, _ = _get_github_app(
         app_id, message_id, content, data, *args, **kwargs
     )
+    comment_text = content["text"]
+
+    # 判断 content 中是否有 at
+    if "mentions" in data["event"]["message"]:
+        # 获得 mentions 中的 openid list
+        mentions = data["event"]["message"]["mentions"]
+        openid_list = [mention["id"]["open_id"] for mention in mentions]
+        code_name_list = []
+
+        for openid in openid_list:
+            # 通过 openid list 获得 code_name_list
+            code_name_list.append(
+                get_github_name_by_openid(
+                    openid,
+                    team.id,
+                    app_id,
+                    message_id,
+                    content,
+                    data,
+                    *args,
+                    **kwargs,
+                )
+            )
+
+        # 替换 content 中的 im_name 为 code_name
+        comment_text = replace_im_name_to_github_name(content["text"], code_name_list)
+
     response = github_app.create_issue_comment(
-        team.name, repo.name, pr.pull_request_number, content["text"]
+        team.name, repo.name, pr.pull_request_number, comment_text
     )
     if "id" not in response:
         return send_pull_request_failed_tip(
@@ -688,10 +773,22 @@ def change_pull_request_reviewer(
     )
     if "id" not in response:
         return send_pull_request_failed_tip(
-            "更新 Pull Request 审核人失败", app_id, message_id, content, data, *args, **kwargs
+            "更新 Pull Request 审核人失败",
+            app_id,
+            message_id,
+            content,
+            data,
+            *args,
+            **kwargs,
         )
     else:
         send_pull_request_success_tip(
-            "更新 Pull Request 审核人成功", app_id, message_id, content, data, *args, **kwargs
+            "更新 Pull Request 审核人成功",
+            app_id,
+            message_id,
+            content,
+            data,
+            *args,
+            **kwargs,
         )
     return response
